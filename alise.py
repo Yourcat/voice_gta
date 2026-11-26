@@ -22,6 +22,10 @@ alise.py — переводчик для игр: Whisper + Argos (en->ru) + Sile
   Right Alt      сброс логики диалога
   R              обвести область субтитров заново без перезапуска
 
+Модель Whisper меняется в превью-окне (выпадающий список): напротив каждой
+модели видно, есть ли она в кеше Hugging Face или сколько весит для скачивания.
+Выбор применяется без перезапуска и сохраняется в конфиг.
+
 Whisper распознаёт ПОТОКОВО: предложения уходят в перевод и озвучку
 по мере расшифровки, не дожидаясь конца всей реплики.
 
@@ -90,6 +94,7 @@ import sounddevice as sd
 from rapidocr import RapidOCR
 
 import tkinter as tk
+import tkinter.ttk as ttk
 
 try:
     from PIL import Image, ImageTk
@@ -153,7 +158,7 @@ MARK_AUDIO_SEC = 2.5
 CPS_SUB_DEFAULT = 15.0
 CAL_MIN_PAIRS = 5
 
-WHISPER_MODEL = "large-v3-turbo"
+WHISPER_MODEL = "small"
 WHISPER_LANG = None
 SEG_MIN_SEC = 0.5
 SEG_SILENCE_SEC = 0.40
@@ -173,8 +178,7 @@ PEAK_DECAY = 0.999
 
 REC_METER_SEC = 2.0
 
-# ИСПРАВЛЕНО: устройство выбирается автоматически. На AMD CUDA нет,
-# попытки "cuda" без карты порождают лишнюю ошибку на старте.
+# Устройство выбирается автоматически: на AMD CUDA нет — пойдём на CPU.
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 WHISPER_DEVICE = DEVICE
 
@@ -244,6 +248,81 @@ INPUT_DEVICE_INDEX = None
 _app = None
 recorder = None
 DPI_SCALE = 1.0
+
+# ======================================================
+# Модели Whisper: кеш и скачивание
+# ======================================================
+# имя -> (репозиторий на Hugging Face, размер ~МБ, комментарий)
+WHISPER_MODELS = {
+    "tiny":             ("Systran/faster-whisper-tiny", 75, "только тест"),
+    "base":             ("Systran/faster-whisper-base", 145, "быстро, качество ниже среднего"),
+    "small":            ("Systran/faster-whisper-small", 484, "баланс — лучший на CPU"),
+    "medium":           ("Systran/faster-whisper-medium", 1500, "очень хорошее, на CPU впритык"),
+    "large-v1":         ("Systran/faster-whisper-large-v1", 3000, "для GPU"),
+    "large-v2":         ("Systran/faster-whisper-large-v2", 3000, "для GPU"),
+    "large-v3":         ("Systran/faster-whisper-large-v3", 3000, "топ-точность, для GPU"),
+    "large-v3-turbo":   ("Systran/faster-whisper-large-v3-turbo", 1600, "быстрый и точный, тяжёлый на CPU"),
+    "distil-large-v2":  ("Systran/faster-distil-whisper-large-v2", 1500, "только английский"),
+    "distil-medium.en": ("Systran/faster-distil-whisper-medium.en", 1500, "только английский"),
+}
+
+_cache_check = {}
+_cache_check_lock = threading.Lock()
+
+def whisper_model_cached(name):
+    """True, если модель уже скачана в кеш Hugging Face."""
+    info = WHISPER_MODELS.get(name)
+    if not info:
+        return False
+    with _cache_check_lock:
+        if name in _cache_check:
+            return _cache_check[name]
+    cached = False
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(repo_id=info[0], local_files_only=True)
+        cached = True
+    except Exception:
+        cached = False
+    with _cache_check_lock:
+        _cache_check[name] = cached
+    return cached
+
+_whisper_pending = {"model": None}
+_whisper_pending_lock = threading.Lock()
+
+def request_whisper_model(name):
+    """Ставит задачу смены модели — поток Whisper применит между сегментами."""
+    if name not in WHISPER_MODELS:
+        print(f"[!] Неизвестная модель Whisper: {name}")
+        return
+    with _whisper_pending_lock:
+        _whisper_pending["model"] = name
+    if whisper_model_cached(name):
+        print(f"[*] Whisper: переключаюсь на {name} (из кеша)")
+    else:
+        print(f"[*] Whisper: {name} нет в кеше — скачаю "
+              f"(~{WHISPER_MODELS[name][1]} МБ), затем переключусь")
+    try:
+        cfg = load_config()
+        cfg["whisper_model"] = name
+        save_config(cfg)
+    except Exception:
+        pass
+
+def _load_whisper_model(model_name):
+    """Грузит модель, на AMD/без CUDA автоматически уходит на CPU."""
+    from faster_whisper import WhisperModel
+    try:
+        model = WhisperModel(model_name, device=WHISPER_DEVICE,
+                             compute_type=("float16"
+                                           if WHISPER_DEVICE == "cuda"
+                                           else "int8"))
+        return model, WHISPER_DEVICE
+    except Exception as e:
+        print(f"[!] Whisper {model_name} не запустился на {WHISPER_DEVICE} "
+              f"({e}) — пробую CPU")
+        return WhisperModel(model_name, device="cpu", compute_type="int8"), "cpu"
 
 # ======================================================
 # Хранилище образцов (WAV + CSV) и метрик
@@ -1408,28 +1487,42 @@ def resample_to_16k(audio, sr):
 
 def whisper_worker(seg_queue, model_name, whisper_lang):
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except ImportError:
         print("[!] Нет faster-whisper — установи: py -m pip install faster-whisper")
         return
 
+    global WHISPER_MODEL
+    current = model_name
     try:
-        model = WhisperModel(model_name, device=WHISPER_DEVICE,
-                             compute_type=("float16"
-                                           if WHISPER_DEVICE == "cuda"
-                                           else "int8"))
-    except Exception as e:
-        print(f"[!] Whisper не запустился ({e}) — пробую CPU")
-        try:
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        except Exception as e2:
-            print(f"[!] Whisper не запустился и на CPU: {e2}")
-            return
-
-    print(f"[OK] Whisper ({model_name}) готов — потоковое распознавание")
+        model, dev = _load_whisper_model(current)
+    except Exception as e2:
+        print(f"[!] Whisper не запустился вообще: {e2}")
+        return
+    WHISPER_MODEL = current
+    print(f"[OK] Whisper ({current}, {dev}) готов — потоковое распознавание")
 
     while True:
-        seg, sr = seg_queue.get()
+        # --- смена модели по запросу из GUI ---
+        with _whisper_pending_lock:
+            pend = _whisper_pending["model"]
+            _whisper_pending["model"] = None
+        if pend and pend != current:
+            print(f"[*] Whisper: загрузка {pend}...")
+            try:
+                model, dev = _load_whisper_model(pend)
+                current = pend
+                WHISPER_MODEL = current
+                with _cache_check_lock:
+                    _cache_check[pend] = True
+                print(f"[OK] Whisper ({pend}, {dev}) готов")
+            except Exception as e:
+                print(f"[!] Не удалось загрузить {pend}: {e} — остаюсь на {current}")
+
+        try:
+            seg, sr = seg_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
         try:
             dur = len(seg) / float(sr)
             if dur < SEG_MIN_SEC:
@@ -1553,7 +1646,7 @@ def _apply_reset(e=None):
           f"(голос {VOICE_MALE})")
     log_metrics(source="manual", note="сброс диалога")
 
-# --- ИСПРАВЛЕНО: выбор области уходит через очередь в главный поток Tk ---
+# --- выбор области уходит через очередь в главный поток Tk ---
 def _apply_reselect(e=None):
     if _app is None:
         print("[!] Превью ещё не запущено — область перевыделить нельзя")
@@ -1870,6 +1963,20 @@ class PreviewApp:
                                bg="#111", fg="#cfcfcf", font=("Consolas", 10))
         self.status.pack(fill=tk.X, padx=4, pady=(0, 2))
 
+        # --- выбор модели Whisper ---
+        self._label2name = {}
+        self.model_var = tk.StringVar()
+        row_m = tk.Frame(root, bg="#111")
+        row_m.pack(fill=tk.X, padx=4)
+        tk.Label(row_m, text="Whisper:", bg="#111", fg="#cfcfcf",
+                 font=("Consolas", 10)).pack(side=tk.LEFT)
+        self.model_box = ttk.Combobox(row_m, textvariable=self.model_var,
+                                      state="readonly", width=38)
+        self.model_box.pack(side=tk.LEFT, padx=4)
+        self.model_box.bind("<<ComboboxSelected>>", self._on_model_pick)
+        self._poll_cnt = 0
+        self._refresh_model_menu()
+
         btns = tk.Frame(root, bg="#111")
         btns.pack(fill=tk.X, padx=4, pady=(0, 6))
         tk.Button(btns, text="Голос (речь)",
@@ -1885,7 +1992,7 @@ class PreviewApp:
 
         self.resize_canvas()
         w = max(300, self.prev_w + 20)
-        h = max(140, self.prev_h + 90)
+        h = max(140, self.prev_h + 120)
         root.geometry(f"{w}x{h}+50+50")
         print(f"[WINDOW] превью открыто: {w}x{h}+50+50 "
               f"(канвас {self.prev_w}x{self.prev_h}, область {self.box})")
@@ -1928,6 +2035,28 @@ class PreviewApp:
             self.reselect_box(new_box)
             overlay.set_box(new_box)
 
+    def _refresh_model_menu(self):
+        labels = []
+        for name in WHISPER_MODELS:
+            cached = whisper_model_cached(name)
+            mark = ("в кеше" if cached
+                    else f"скачать ~{WHISPER_MODELS[name][1]} МБ")
+            cur = " ● сейчас" if name == WHISPER_MODEL else ""
+            label = f"{name} — {mark}{cur}"
+            self._label2name[label] = name
+            labels.append(label)
+        self.model_box["values"] = labels
+        cur_label = next((l for l, n in self._label2name.items()
+                          if n == WHISPER_MODEL), labels[0] if labels else "")
+        self.model_var.set(cur_label)
+
+    def _on_model_pick(self, event=None):
+        name = self._label2name.get(self.model_var.get())
+        if not name or name == WHISPER_MODEL:
+            return
+        request_whisper_model(name)
+        self._refresh_model_menu()
+
     def quit(self):
         self.root.destroy()
         os._exit(0)
@@ -1947,6 +2076,10 @@ class PreviewApp:
                 except Exception:
                     traceback.print_exc()
 
+            self._poll_cnt += 1
+            if self._poll_cnt % 300 == 0:
+                self._refresh_model_menu()
+
             frame = capture_region(self.box)
             cap_ms = (time.perf_counter() - t0) * 1000
 
@@ -1961,7 +2094,7 @@ class PreviewApp:
 
             mode = get_mode()
 
-            # ИСПРАВЛЕНО: кэш OCR при статичном кадре — FPS не падает
+            # кэш OCR при статичном кадре — FPS не падает
             if mode != "subs_voice" or bright < 0.003:
                 texts, boxes = [], []
                 self._cached_ocr = None
