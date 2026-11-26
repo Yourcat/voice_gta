@@ -1,4 +1,4 @@
-# alise.py — зависимости (без torch: он ставится отдельно с CUDA-индексом)
+# alise.py — зависимости (без torch: он ставится отдельно, у AMD — CPU-версия)
 numpy
 mss
 opencv-python
