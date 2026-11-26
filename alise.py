@@ -2145,6 +2145,33 @@ def main():
 
     compute_dpi_scale()
 
+    # --- ОБЛАСТЬ: сразу из конфига или сразу выбор мышкой,
+    #     ДО тяжёлой инициализации (OCR/Whisper/Silero грузятся долго) ---
+    saved = cfg.get("region")
+    box = None
+    if saved:
+        try:
+            box = (int(saved["x"]), int(saved["y"]),
+                   int(saved["w"]), int(saved["h"]))
+        except (KeyError, TypeError, ValueError):
+            box = None
+    if box:
+        print(f"[OK] Область из конфига: x={box[0]}, y={box[1]}, "
+              f"w={box[2]}, h={box[3]} (перезапуск по R не нужен)")
+    else:
+        print("\nОбведи мышкой полосу субтитров В ИГРЕ "
+              "(консоль убери с этого места!).")
+        box = select_region()
+        if not box:
+            print("[!] Область не выделена — выход.")
+            os._exit(0)
+
+    cfg["region"] = {"x": box[0], "y": box[1], "w": box[2], "h": box[3]}
+    cfg["mode"] = CURRENT_MODE
+    save_config(cfg)
+    overlay.set_box(box)
+
+    # --- звуковые устройства ---
     devices = list_devices_subprocess()
     if devices:
         in_idx, in_name = choose_device(devices, "in", cfg)
@@ -2159,9 +2186,11 @@ def main():
               "по умолчанию")
         OUTPUT_DEVICE_INDEX = None
 
+    # --- OCR ---
     print("Инициализация RapidOCR...")
     ocr_model = init_ocr()
 
+    # --- TTS ---
     print(f"Загрузка Silero TTS (device={DEVICE})...")
     tts_model, _ = torch.hub.load("snakers4/silero-models", "silero_tts",
                                   language="ru", speaker="v4_ru",
@@ -2169,8 +2198,10 @@ def main():
     tts_model.to(DEVICE)
     print("[OK] Silero v4 готов.")
 
+    # --- поток-спикер ---
     threading.Thread(target=tts_speaker, daemon=True).start()
 
+    # --- слушатель речи + Whisper ---
     if INPUT_DEVICE_INDEX is not None:
         seg_queue = queue.Queue(maxsize=3)
         recorder = SpeechRecorder(INPUT_DEVICE_INDEX, seg_queue)
@@ -2182,31 +2213,8 @@ def main():
         print("[!] Входное устройство недоступно — живой F0 отключён, "
               "голос всегда будет базовым")
 
+    # --- горячие клавиши ---
     threading.Thread(target=keyboard_control, daemon=True).start()
-
-    saved = cfg.get("region")
-    box = None
-    if saved:
-        box = (saved["x"], saved["y"], saved["w"], saved["h"])
-        print(f"[OK] Сохранённая область: x={box[0]}, y={box[1]}, "
-              f"w={box[2]}, h={box[3]}")
-        ans = input("Использовать её? (Enter — да, любой текст+Enter — "
-                    "обвести заново): ").strip()
-        if ans:
-            box = None
-
-    if box is None:
-        print("\nОбведи мышкой полосу субтитров В ИГРЕ "
-              "(консоль убери с этого места!).")
-        box = select_region()
-    if not box:
-        print("[!] Область не выделена — выход.")
-        os._exit(0)
-
-    cfg["region"] = {"x": box[0], "y": box[1], "w": box[2], "h": box[3]}
-    cfg["mode"] = CURRENT_MODE
-    save_config(cfg)
-    overlay.set_box(box)
 
     print(f"Отслеживаю область: x={box[0]}, y={box[1]}, "
           f"w={box[2]}, h={box[3]}")
@@ -2226,6 +2234,9 @@ def main():
     root.after(1000, lambda: (root.lift(), root.attributes("-topmost", True)))
     root.mainloop()
     print("\nОстановлено.")
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
