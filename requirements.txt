@@ -1,0 +1,10 @@
+# alise.py — зависимости (без torch: он ставится отдельно с CUDA-индексом)
+numpy
+mss
+opencv-python
+sounddevice
+rapidocr
+pillow
+faster-whisper
+argostranslate
+keyboard
