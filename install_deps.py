@@ -196,8 +196,8 @@ def install_torch():
 def install_argos_pair():
     print("[*] Установка пакета перевода Argos en->ru")
     try:
-        # ИСПРАВЛЕНО: get_installed_languages живёт в argostranslate.translate,
-        # а не в argostranslate.package — из-за этого установка падала
+        # get_installed_languages живёт в argostranslate.translate,
+        # а не в argostranslate.package
         from argostranslate import package, translate
         installed = translate.get_installed_languages()
         src = next((l for l in installed if l.code == "en"), None)
