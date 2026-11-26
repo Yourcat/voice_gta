@@ -2,8 +2,9 @@
 """
 install_deps.py — авто-установка окружения для alise.py.
 
-Ставит pip-пакеты, PyTorch с CUDA (если есть NVIDIA), удаляет конфликтный
-paddle, скачивает пакет перевода Argos en->ru и модель Whisper.
+Пакеты ставятся из requirements.txt, лежащего рядом с этим скриптом.
+Отдельно ставится PyTorch (CUDA при наличии NVIDIA), удаляется
+конфликтный paddle, скачивается пакет Argos en->ru и модель Whisper.
 
 Запуск:  py install_deps.py
 Скрипт идемпотентный: повторный запуск не ломает уже установленное.
@@ -15,23 +16,22 @@ import sys
 import os
 import importlib
 
-PIP_PACKAGES = [
-    "numpy",
-    "mss",
-    "opencv-python",
-    "sounddevice",
-    "rapidocr",
-    "pillow",
-    "faster-whisper",
-    "argostranslate",
-    "keyboard",
-]
+REQUIREMENTS_FILE = "requirements.txt"
 
-WHISPER_MODEL = "large-v3-turbo"
-
+# torch не включаем в requirements.txt: у него особый индекс для CUDA
 TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu121"
 
 CONFLICTING_PACKAGES = ["paddleocr", "paddle", "paddlepaddle"]
+
+# карта: имя пакета в requirements -> имя модуля для проверки импорта
+IMPORT_ALIASES = {
+    "opencv-python": "cv2",
+    "faster-whisper": "faster_whisper",
+    "pillow": "PIL",
+    "sounddevice": "sounddevice",
+}
+
+WHISPER_MODEL = "large-v3-turbo"
 
 
 def run(cmd, check=True):
@@ -63,25 +63,70 @@ def ensure_pip():
         pip_install(["--upgrade", "pip", "setuptools", "wheel"])
 
 
-def pip_ok():
-    """Проверяет, ставятся ли пакеты вообще (без записи в системный Python)."""
-    proc = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--dry-run", "--quiet",
-         "six"],
-        capture_output=True, text=True)
-    return proc.returncode == 0
+def read_requirements():
+    """Читает requirements.txt: строки без комментариев и пустые."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        REQUIREMENTS_FILE)
+    if not os.path.exists(path):
+        print(f"[X] Не найден {REQUIREMENTS_FILE} — положи рядом со скриптом")
+        print(f"    Ожидался путь: {path}")
+        return None
+    pkgs = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            pkgs.append(s)
+    if not pkgs:
+        print(f"[X] {REQUIREMENTS_FILE} пустой — добавь список пакетов")
+        return None
+    print(f"[*] Пакетов в {REQUIREMENTS_FILE}: {len(pkgs)}")
+    for p in pkgs:
+        print(f"    - {p}")
+    return pkgs
 
 
-def uninstall_conflicting():
-    print("[*] Удаление конфликтных пакетов (paddle мешает RapidOCR)")
-    pip_install(["uninstall", "-y"] + CONFLICTING_PACKAGES, check=False)
+def missing_from_requirements(pkgs):
+    """Какие пакеты из requirements ещё не импортируются."""
+    missing = []
+    for pkg in pkgs:
+        base = (pkg.split(";")[0].strip()
+                .split("==")[0].split(">=")[0].split("<=")[0].strip())
+        mod = IMPORT_ALIASES.get(base, base.replace("-", "_"))
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            missing.append(pkg)
+    return missing
 
 
-def install_pip_packages():
-    print("[*] Установка pip-пакетов")
-    # torch ставится отдельно: у него особый индекс для CUDA
-    others = [p for p in PIP_PACKAGES if p != "torch"]
-    pip_install(others)
+def install_from_requirements():
+    pkgs = read_requirements()
+    if pkgs is None:
+        return False
+
+    missing = missing_from_requirements(pkgs)
+    if not missing:
+        print("[OK] Все пакеты из requirements.txt уже установлены")
+        return True
+
+    print(f"[*] Не хватает: {', '.join(missing)}")
+    # ставим только недостающие: быстрее и не пересоздаёт окружение
+    pip_install(missing, check=False)
+
+    still = missing_from_requirements(pkgs)
+    if still:
+        print(f"[!] Не импортируются: {', '.join(still)}")
+        print("    Полная установка всего списка:")
+        pip_install(["-r", REQUIREMENTS_FILE], check=False)
+        still = missing_from_requirements(pkgs)
+    if still:
+        print(f"[!] Часть пакетов не установилась: {', '.join(still)}")
+        print("    Смотри сообщения pip выше; alise.py сообщит недостающее")
+        return False
+    print("[OK] Пакеты из requirements.txt установлены")
+    return True
 
 
 def install_torch():
@@ -93,7 +138,6 @@ def install_torch():
     except ImportError:
         pass
 
-    # есть ли NVIDIA-драйвер?
     has_nvidia = False
     try:
         proc = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
@@ -133,7 +177,7 @@ def install_argos_pair():
             if any(t.code == "ru" for t in src.translations_to()):
                 print("[OK] Argos en->ru уже установлен")
                 return
-        print("[*] Скачиваю argospackage en_ru (~250 МБ)")
+        print("[*] Скачиваю пакет Argos en_ru (~250 МБ)")
         package.update_package_index()
         available = package.get_available_packages()
         target = [p for p in available
@@ -161,8 +205,12 @@ def predownload_whisper():
         print(f"[!] Модель не скачалась ({e}) — будет скачана при первом запуске")
 
 
+def uninstall_conflicting():
+    print("[*] Удаление конфликтных пакетов (paddle мешает RapidOCR)")
+    pip_install(["uninstall", "-y"] + CONFLICTING_PACKAGES, check=False)
+
+
 def fix_protobuf_if_needed():
-    """Иногда onnxruntime/protobuf конфликтуют по версии."""
     try:
         import google.protobuf  # noqa: F401
         import onnxruntime  # noqa: F401
@@ -175,15 +223,13 @@ def fix_protobuf_if_needed():
 
 def ensure_environment():
     """Точка входа для вызова из alise.py: тихая проверка, ничего не ломает."""
-    missing = []
-    for name in PIP_PACKAGES:
-        try:
-            importlib.import_module(
-                {"opencv-python": "cv2",
-                 "faster-whisper": "faster_whisper",
-                 "argostranslate": "argostranslate"}.get(name, name))
-        except ImportError:
-            missing.append(name)
+    try:
+        pkgs = read_requirements()
+    except Exception:
+        pkgs = None
+    if pkgs is None:
+        return []
+    missing = missing_from_requirements(pkgs)
     if missing:
         print(f"[!] Не хватает пакетов: {', '.join(missing)}")
         print("    Запусти: py install_deps.py")
@@ -196,20 +242,20 @@ def main():
     print("=" * 60)
 
     ensure_pip()
-    if not pip_ok():
-        print("[X] pip не может ставить пакеты.")
-        print("    Проверь установку Python (галочка PATH) или права.")
-        sys.exit(1)
 
     uninstall_conflicting()
-    install_pip_packages()
+    ok = install_from_requirements()
     install_torch()
     fix_protobuf_if_needed()
     install_argos_pair()
     predownload_whisper()
 
     print("=" * 60)
-    print("[OK] Установка завершена. Запускай: py alise.py")
+    if ok:
+        print("[OK] Установка завершена. Запускай: py alise.py")
+    else:
+        print("[!] Есть непоставленные пакеты — смотри сообщения выше,")
+        print("    потом запусти py install_deps.py ещё раз")
     print("=" * 60)
 
 
