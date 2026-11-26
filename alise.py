@@ -1,23 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-alise.py — переводчик для игр: Whisper (large-v3-turbo) + Argos (en->ru)
-+ Silero TTS + RapidOCR. Кириллица.
+alise.py — переводчик для игр: Whisper + Argos (en->ru) + Silero TTS
++ RapidOCR. Кириллица.
 
 РЕЖИМЫ (клавиши):
   ВЛЕВО      — «ГОЛОС»: речь игры (en/ru) -> Whisper -> перевод -> озвучка.
                Голос подбирается по диктору (метки ВВЕРХ/ВНИЗ + живой F0).
   ВПРАВО     — «СУБТИТРЫ»: речь игры -> Whisper -> перевод -> прозрачный
-               компактный оверлей в зоне захвата, цвет текста по диктору
+               оверлей в зоне захвата, цвет текста по диктору
                (голубой — муж, розовый — жен, белый — не определён).
-               Шрифт автоматически вписывает блок в зону захвата.
-               Предложения уходят в оверлей по мере расшифровки.
   Right Ctrl — «ГОЛОС ПО САБАМ»: русские субтитры на экране -> OCR ->
                озвучка. Пока OCR читает текст, голос слушается параллельно.
-
-При переключении режима оверлей показывает жёлтую плашку с названием
-режима, накопленная очередь озвучки очищается. Фразы в режиме «Голос»
-играют ПОДРЯД (очередь), а не прерывают друг друга.
-Right Shift — вкл/выкл озвучку (субтитры продолжают работать).
 
 КЛАВИШИ:
   ← Влево        режим «Голос» (озвучка) на основе речи
@@ -35,22 +28,15 @@ Whisper распознаёт ПОТОКОВО: предложения уходя
 Темп речи под фразу: dur_оригинала = длина фразы x k (стартовый k = 1/15 сек
 на знак), самокалибровка по VAD-сегментам реальной речи (после 5 пар —
 измеренный k). Метки дикторов и калибровка сохраняются в конфиг сразу.
-
-Зависимости: ставятся автоматически при первом запуске (install_deps.py),
-или вручную:
-  pip install numpy mss opencv-python torch sounddevice rapidocr pillow
-  pip install faster-whisper argostranslate keyboard
 """
 
 import os
 import ctypes
 
-# Лимиты потоков ДО импорта numpy/torch
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 
-# DPI-aware: процесс видит физическое разрешение, координаты консистентны.
 def make_dpi_aware():
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -61,7 +47,6 @@ def make_dpi_aware():
             pass
 
 def _physical_screen_size():
-    """Физическое разрешение экрана независимо от DPI-aware процесса."""
     try:
         user32 = ctypes.windll.user32
         set_ctx = user32.SetThreadDpiAwarenessContext
@@ -76,12 +61,11 @@ def _physical_screen_size():
 
 make_dpi_aware()
 
-# --- авто-установка окружения (до тяжёлых импортов) ---
 try:
     import install_deps
     install_deps.ensure_environment()
 except ImportError:
-    pass   # install_deps.py не лежит рядом — не критично
+    pass
 except Exception as _e:
     print(f"[!] Авто-установка недоступна ({_e}) — работаем с тем, что есть")
 
@@ -121,14 +105,13 @@ METRICS_FILE = "voice_metrics.jsonl"
 CSV_LOG_FILE = "voice_samples.csv"
 WAV_DIR = "voice_samples"
 
-SAMPLE_RATE = 48000      # Silero v4 работает на 48 кГц
+SAMPLE_RATE = 48000
 
-COOLDOWN_SEC = 0.8        # минимальная пауза между озвучками
-LAST_SPOKEN_SEC = 10.0    # столько секунд одна фраза не повторяется
+COOLDOWN_SEC = 0.8
+LAST_SPOKEN_SEC = 10.0
 MIN_TEXT_LEN = 3
 SCORE_MIN = 0.60
 
-# --- опрос экрана: всегда быстрый, холостой OCR отсекается дёшево ---
 POLL_IDLE_SEC = 0.09
 POLL_ACTIVE_SEC = 0.09
 OCR_SKIP_STATIC = 3
@@ -142,12 +125,10 @@ TRIM_PAD = 6
 
 PREVIEW_WIDTH = 720
 
-# --- живой замер F0: окно 200 мс, замер каждые 50 мс ---
 LIVE_WINDOW_SEC = 0.20
 LIVE_HOP_SEC = 0.05
 LIVE_MAX_AGE = 1.5
 
-# --- логика диалога ---
 VOICE_MALE = "eugene"
 VOICE_MALE_ALT = "aidar"
 VOICE_FEMALE = "xenia"
@@ -155,54 +136,48 @@ VOICE_FEMALE_ALT = "baya"
 F0_SWITCH_DELTA = 30.0
 F0_FALLBACK = 165.0
 
-# --- цвета оверлея по диктору ---
-COLOR_MALE = "#7FD4FF"     # голубой
-COLOR_FEMALE = "#FF9ECF"   # розовый
-COLOR_UNKNOWN = "#FFFFFF"  # белый
-COLOR_MODE_FLASH = "#FFD966"   # жёлтая плашка режима/статуса
+COLOR_MALE = "#7FD4FF"
+COLOR_FEMALE = "#FF9ECF"
+COLOR_UNKNOWN = "#FFFFFF"
+COLOR_MODE_FLASH = "#FFD966"
 
-# --- оверлей: вписывание в зону захвата ---
-OVERLAY_FIT_FACTOR = 1.3   # блок может занять до 130% высоты зоны
-OVERLAY_MIN_FONT = 12      # ниже не жмём — читаемость важнее
-OVERLAY_MAX_FONT = 28      # компактные субтитры
-OVERLAY_MODE_FLASH_SEC = 2.5   # сколько секунд висит плашка режима
+OVERLAY_FIT_FACTOR = 1.3
+OVERLAY_MIN_FONT = 12
+OVERLAY_MAX_FONT = 28
+OVERLAY_MODE_FLASH_SEC = 2.5
 
-# --- маркировка дикторов ---
 MARK_SAMPLES_MAX = 50
-RECENT_AUDIO_SEC = 3.0     # кольцевой буфер звука для меток
-MARK_AUDIO_SEC = 2.5       # сколько последних секунд сохранять в WAV при метке
+RECENT_AUDIO_SEC = 3.0
+MARK_AUDIO_SEC = 2.5
 
-# --- прогноз длительности оригинала по длине субтитра ---
 CPS_SUB_DEFAULT = 15.0
 CAL_MIN_PAIRS = 5
 
-# --- Whisper ---
-WHISPER_MODEL = "large-v3-turbo"   # переопределяется конфигом
-WHISPER_DEVICE = "cuda"            # при проблемах поставь "cpu"
-WHISPER_LANG = None                # None = автоопределение
+WHISPER_MODEL = "large-v3-turbo"
+WHISPER_LANG = None
 SEG_MIN_SEC = 0.5
-SEG_SILENCE_SEC = 0.40             # тишина = конец фразы
-SEG_MAX_SEC = 20.0                 # предохранитель: длинный сегмент режем
+SEG_SILENCE_SEC = 0.40
+SEG_MAX_SEC = 20.0
 BASE_CPS = 15.0
-RATE_MIN, RATE_MAX = 0.8, 1.3      # границы speeech_rate
-SAVE_SEGMENT_WAV = False           # True — каждый Whisper-сегмент в WAV
+RATE_MIN, RATE_MAX = 0.8, 1.3
+SAVE_SEGMENT_WAV = False
 
-# --- обучение слепков ---
 STATS_SAVE_SEC = 5.0
 F0_LO, F0_HI = 60.0, 400.0
 
-# --- чувствительность VAD ---
 VAD_MIN_THRESH = 0.0025
 VAD_FLOOR_K = 2.5
 NOISE_FLOOR_INIT = 0.001
-SILENCE_RATIO = 0.30    # тишина = ниже 30% пика речи (музыка не мешает)
-PEAK_DECAY = 0.999      # затухание пика за блок
+SILENCE_RATIO = 0.30
+PEAK_DECAY = 0.999
 
 REC_METER_SEC = 2.0
 
+# ИСПРАВЛЕНО: устройство выбирается автоматически. На AMD CUDA нет,
+# попытки "cuda" без карты порождают лишнюю ошибку на старте.
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+WHISPER_DEVICE = DEVICE
 
-# --- режимы ---
 VALID_MODES = ("voice", "subs", "subs_voice")
 MODE_NAMES = {
     "voice":      "ГОЛОС: речь игры -> Whisper -> перевод -> озвучка",
@@ -213,8 +188,6 @@ CURRENT_MODE = "voice"
 _mode_lock = threading.Lock()
 
 CYR_RE = re.compile(r"[а-яёА-ЯЁ]")
-
-# разбиение распознанного на предложения для немедленного вывода
 SENTENCE_FLUSH_RE = re.compile(r"^(.*?[.!?…])(\s+|$)")
 
 def norm_key(s):
@@ -227,6 +200,14 @@ def get_mode():
     with _mode_lock:
         return CURRENT_MODE
 
+# --- потокобезопасная очередь вызовов Tk (главный поток их исполняет) ---
+_pending_tk = queue.Queue()
+
+def post_to_tk(fn):
+    """Планирует fn на исполнение в главном потоке Tk.
+    Безопасно вызывать из любых потоков (keyboard, whisper, tts)."""
+    _pending_tk.put(fn)
+
 def set_mode(mode):
     global CURRENT_MODE
     if mode not in VALID_MODES:
@@ -235,8 +216,6 @@ def set_mode(mode):
     with _mode_lock:
         CURRENT_MODE = mode
     print(f"[MODE] {MODE_NAMES[mode]}")
-    # не вываливать накопленное после смены режима:
-    # чистим очередь TTS и глушим всё, что звучит
     while True:
         try:
             _tts_queue.get_nowait()
@@ -248,18 +227,12 @@ def set_mode(mode):
     except Exception:
         pass
     log_metrics(source="mode", mode=mode)
-    # плашка режима в оверлее: set_mode может зваться из потока клавиш,
-    # Tk трогаем только через root.after в главном потоке
     def _mode_flash_soon():
         try:
             overlay._flash_text(f"● {MODE_NAMES[get_mode()]}")
         except Exception:
             pass
-    if _app is not None and _app.root is not None:
-        try:
-            _app.root.after(0, _mode_flash_soon)
-        except Exception:
-            pass
+    post_to_tk(_mode_flash_soon)
 
 # ======================================================
 # Глобальное состояние
@@ -269,7 +242,7 @@ tts_model = None
 OUTPUT_DEVICE_INDEX = None
 INPUT_DEVICE_INDEX = None
 _app = None
-recorder = None                  # ссылка на SpeechRecorder для меток
+recorder = None
 DPI_SCALE = 1.0
 
 # ======================================================
@@ -299,7 +272,6 @@ def log_metrics(source, **kw):
         print(f"[!] Не удалось записать метрики: {e}")
 
 def save_wav(audio, sr, gender, prefix="mark"):
-    """Сохраняет float32-сегмент в WAV (int16). Возвращает путь или None."""
     if audio is None or len(audio) == 0 or not sr:
         return None
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -336,7 +308,6 @@ def log_sample_row(gender, f0, wav_path, dur_sec):
         print(f"[!] Ошибка записи CSV: {e}")
 
 def save_marks_now():
-    """Немедленно сохраняет метки дикторов в конфиг."""
     try:
         cfg = {}
         if os.path.exists(CONFIG_FILE):
@@ -348,14 +319,9 @@ def save_marks_now():
         print(f"[!] Не удалось сохранить метки: {e}")
 
 # ======================================================
-# Реестр дикторов: маркировка ВВЕРХ/ВНИЗ + классификация по живому F0
+# Реестр дикторов
 # ======================================================
 class SpeakerRegistry:
-    """Опорные F0 мужских и женских дикторов.
-
-    ВВЕРХ/ВНИЗ копят живые замеры F0; классификация по ближайшей опоре.
-    Нет меток — порог F0_FALLBACK.
-    """
     def __init__(self):
         self.male = []
         self.female = []
@@ -414,7 +380,6 @@ class SpeakerRegistry:
                       f"(n={n}, медиана {median:.0f}Гц)")
 
     def classify(self, f0):
-        """'male' | 'female' по ближайшей опоре или порогу."""
         if f0 is None or not (F0_LO < f0 < F0_HI):
             return None
         m, f = self.refs_snapshot()
@@ -429,7 +394,7 @@ class SpeakerRegistry:
 speaker_registry = SpeakerRegistry()
 
 # ======================================================
-# Профиль голоса: живой F0 + калибровка темпа
+# Профиль голоса
 # ======================================================
 class VoiceProfile:
     def __init__(self):
@@ -530,19 +495,9 @@ class VoiceProfile:
 voice_profile = VoiceProfile()
 
 # ======================================================
-# DialogueTracker: голос и пол по диктору (метки + живой F0)
+# DialogueTracker
 # ======================================================
 class DialogueTracker:
-    """Определяет голос и пол по классификации диктора.
-
-    Правила:
-    - пол — по ближайшей маркированной опоре (или порогу F0_FALLBACK);
-    - муж -> eugene, жен -> xenia;
-    - тот же пол, но F0 прыгнул >= F0_SWITCH_DELTA -> альтернативный голос
-      (aidar / baya) — так различаются два говорящих одного пола;
-    - нет замера -> текущий голос.
-    Возвращает (голос, пол, причина).
-    """
     def __init__(self):
         self.lock = threading.Lock()
         self.last_f0 = None
@@ -637,7 +592,7 @@ def save_config(cfg):
         print(f"[!] Не удалось сохранить конфиг: {e}")
 
 # ======================================================
-# Звуковые устройства (опрос в подпроцессе с таймаутом)
+# Звуковые устройства
 # ======================================================
 SD_SNIPPET = (
     "import json; import sounddevice as sd; "
@@ -736,7 +691,7 @@ def silence_rapidocr_logs():
         pass
 
 # ======================================================
-# Инициализация OCR (кириллица, попытка GPU)
+# Инициализация OCR
 # ======================================================
 def init_ocr():
     silence_rapidocr_logs()
@@ -792,7 +747,7 @@ def init_ocr():
     return ocr
 
 # ======================================================
-# DPI: масштаб физических/логических пикселей
+# DPI
 # ======================================================
 def compute_dpi_scale():
     global DPI_SCALE
@@ -813,20 +768,28 @@ def compute_dpi_scale():
     return DPI_SCALE
 
 # ======================================================
-# Выбор области мышкой (полупрозрачный оверлей, DPI-корректно)
+# Выбор области мышкой
+# ИСПРАВЛЕНО: у Toplevel нет mainloop() — для дочернего окна ждём через
+# parent.wait_window(). Раньше повторный выбор падал с AttributeError.
 # ======================================================
 def select_region(parent=None):
-    if parent is not None:
+    own = parent is None
+    if own:
+        root = tk.Tk()
+    else:
         root = tk.Toplevel(parent)
         root.transient(parent)
-        root.grab_set()
-    else:
-        root = tk.Tk()
 
     root.attributes("-fullscreen", True)
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.35)
     root.configure(bg="black")
+    root.lift()
+    root.focus_force()
+    try:
+        root.grab_set()
+    except Exception:
+        pass
 
     scale = DPI_SCALE
     if scale != 1.0:
@@ -864,18 +827,30 @@ def select_region(parent=None):
         w, h = abs(x2 - x1), abs(y2 - y1)
         if w > 20 and h > 10:
             result["box"] = (min(x1, x2), min(y1, y2), w, h)
-        root.grab_release()
+        try:
+            root.grab_release()
+        except Exception:
+            pass
         root.destroy()
 
     def on_esc(e):
-        root.grab_release()
+        try:
+            root.grab_release()
+        except Exception:
+            pass
         root.destroy()
 
     canvas.bind("<ButtonPress-1>", on_press)
     canvas.bind("<B1-Motion>", on_drag)
     canvas.bind("<ButtonRelease-1>", on_release)
     root.bind("<Escape>", on_esc)
-    root.mainloop()
+
+    if own:
+        root.mainloop()
+    else:
+        # ключевой фикс: ждём закрытия окна через wait_window родителя,
+        # а не несуществующий Toplevel.mainloop()
+        parent.wait_window(root)
     return result.get("box")
 
 # ======================================================
@@ -891,7 +866,7 @@ def capture_region(box):
     return frame
 
 # ======================================================
-# Обрезка чёрных полей (letterbox) вокруг субтитров
+# Обрезка чёрных полей
 # ======================================================
 def trim_black_borders(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -918,7 +893,7 @@ def trim_black_borders(frame):
     return frame[top:bottom, left:right], left, top, True
 
 # ======================================================
-# Извлечение текста (OCR с дедупом и фильтром кириллицы)
+# Извлечение текста (OCR)
 # ======================================================
 def _safe_list(x):
     if x is None:
@@ -1006,7 +981,11 @@ def extract_text(frame):
     uniq, uniq_b, raw, ocr_ms, w, h = _run_ocr_pass(frame, OCR_SCALE, tl, tt)
     scale_note = None
 
-    if not uniq:
+    if uniq:
+        extract_text._last_hit = time.time()   # было найдено — ретрай разрешён
+
+    # ретрай х3 — дорогой; делаем только если недавно OCR что-то находил
+    if not uniq and time.time() - getattr(extract_text, "_last_hit", 0) < 10:
         h0 = frame.shape[0]
         if h0 > 300:
             strip = frame[int(h0 * 0.5):, :]
@@ -1017,6 +996,8 @@ def extract_text(frame):
             uniq, uniq_b, raw, ms2, w, h = _run_ocr_pass(frame, RETRY_SCALE, tl, tt)
             scale_note = "перечитано x%.1f" % RETRY_SCALE
         ocr_ms += ms2
+        if uniq:
+            extract_text._last_hit = time.time()
 
     if uniq:
         parts = ", ".join(f"{t!r} ({s:.2f})" for t, s in uniq)
@@ -1035,18 +1016,10 @@ def extract_text(frame):
     return [t for t, s in uniq], uniq_b
 
 # ======================================================
-# Оверлей субтитров: вписывается в зону захвата + плашки статуса
+# Оверлей субтитров
 # ======================================================
 class SubOverlay:
-    """Toplevel без рамки поверх зоны субтитров.
-    Фон полностью прозрачный (transparentcolor), текст цветной по диктору.
-    Шрифт АВТОМАТИЧЕСКИ подгоняется: блок вписывается в высоту зоны
-    (с допуском OVERLAY_FIT_FACTOR), излишки уходят ВВЕРХ от зоны.
-    Оверлей прижат к низу зоны и отцентрирован, как настоящие субтитры.
-    Плашки (режим, мьют) показываются через _flash_text на пару секунд;
-    poll() в это время субтитры в оверлей не рисует и не гасит окно.
-    """
-    MAX_OVERLAY_W = 900     # логических пикселей — шире субтитры не нужны
+    MAX_OVERLAY_W = 900
 
     def __init__(self):
         self.win = None
@@ -1094,8 +1067,6 @@ class SubOverlay:
 
         box_w = max(280, min(lw, self.MAX_OVERLAY_W))
 
-        # подбор шрифта: блок должен вписаться в зону (с допуском);
-        # стартуем от высоты зоны, жмём по 2pt, пока не поместится
         fs = max(OVERLAY_MIN_FONT,
                  min(OVERLAY_MAX_FONT, int(lh * 0.35)))
         fit_h = lh * OVERLAY_FIT_FACTOR
@@ -1112,8 +1083,6 @@ class SubOverlay:
         rw = self.label.winfo_reqwidth() + 6
         rh = self.label.winfo_reqheight() + 6
 
-        # низ блока — на нижней границе зоны, центр по горизонтали.
-        # если блок выше зоны — уходит ВВЕРХ (прозрачный, игре не мешает)
         cx = lx + (lw - rw) // 2
         cy = ly + lh - rh - 2
         self.win.geometry(f"{rw}x{rh}+{max(0, cx)}+{max(0, cy)}")
@@ -1131,7 +1100,6 @@ class SubOverlay:
         self._in_flash = False
 
     def _flash_text(self, text, color=COLOR_MODE_FLASH):
-        """Показывает произвольное сообщение в оверлее на пару секунд."""
         if self.win is not None and self.win.winfo_exists() and self._flash_job:
             try:
                 self.win.after_cancel(self._flash_job)
@@ -1150,8 +1118,6 @@ class SubOverlay:
     def _flash_end(self):
         self._flash_job = None
         self._in_flash = False
-        # если субтитры уже пришли — show_text перезаписал текст сам;
-        # иначе гасим плашку
         if self.win is not None and self.win.winfo_exists():
             self.win.withdraw()
 
@@ -1179,7 +1145,7 @@ class SubOverlay:
 overlay = SubOverlay()
 
 # ======================================================
-# Оценка F0 (автокорреляция, медиана по кадрам)
+# Оценка F0
 # ======================================================
 def estimate_pitch_f0(audio, sr):
     audio = audio - audio.mean()
@@ -1206,7 +1172,7 @@ def estimate_pitch_f0(audio, sr):
     return float(np.median(f0s))
 
 # ======================================================
-# Слушатель речи игры: VAD + живой F0 (50 мс) + кольцевой буфер для меток
+# Слушатель речи игры
 # ======================================================
 class SpeechRecorder:
     def __init__(self, device_index, seg_queue):
@@ -1222,10 +1188,8 @@ class SpeechRecorder:
         self.meter_rms = 0.0
         self.meter_peak = 0.0
         self.meter_t = time.perf_counter()
-        # живой замер F0
         self.live_buf = np.zeros(0, np.float32)
         self.live_t = 0.0
-        # кольцевой буфер последних секунд — для сохранения WAV при метке
         self.recent_lock = threading.Lock()
         self.recent = []
         self.recent_total = 0.0
@@ -1259,7 +1223,6 @@ class SpeechRecorder:
                 self.recent_total -= d0
 
     def get_recent_audio(self, sec=MARK_AUDIO_SEC):
-        """Последние sec секунд звука (моно float32) или None."""
         with self.recent_lock:
             if not self.recent:
                 return None
@@ -1299,7 +1262,6 @@ class SpeechRecorder:
         rms = float(np.sqrt(np.mean(mono ** 2)))
         dt = frames / self.sr
 
-        # кольцевой буфер для меток (последние RECENT_AUDIO_SEC секунд)
         self._push_recent(mono, dt)
 
         self.meter_rms = max(self.meter_rms, rms)
@@ -1327,12 +1289,11 @@ class SpeechRecorder:
             return
 
         self.buf.append(mono)
-        self.peak = max(rms, self.peak * PEAK_DECAY)   # пик речи с затуханием
+        self.peak = max(rms, self.peak * PEAK_DECAY)
         if rms > thresh:
             self.speech_len += dt
             self.silence_run = 0.0
         elif rms >= self.peak * SILENCE_RATIO:
-            # музыка/фон между фразами — не тишина, речь продолжается
             self.speech_len += dt
             self.silence_run = 0.0
         else:
@@ -1341,7 +1302,6 @@ class SpeechRecorder:
         if self.silence_run >= SEG_SILENCE_SEC or self.speech_len >= SEG_MAX_SEC:
             self._finish_segment()
 
-        # --- живой F0: скользящее окно 200 мс, замер каждые 50 мс ---
         self.live_buf = np.concatenate([self.live_buf, mono])
         max_len = int(self.sr * (LIVE_WINDOW_SEC + 0.15))
         if len(self.live_buf) > max_len:
@@ -1356,7 +1316,7 @@ class SpeechRecorder:
                 voice_profile.observe_live(f0)
 
 # ======================================================
-# Перевод (офлайн Argos: не-русский -> русский)
+# Перевод (Argos)
 # ======================================================
 MT_LOCK = threading.Lock()
 _MT = {}
@@ -1381,7 +1341,6 @@ def _get_translator(lang):
     return tr
 
 def translate_to_ru(text, lang):
-    """Возвращает русский текст или None (переводчика нет)."""
     if not text or lang == "ru":
         return text
     tr = _get_translator(lang)
@@ -1402,7 +1361,6 @@ _speech_last = {"key": None, "t": 0.0}
 _speech_lock = threading.Lock()
 
 def route_speech(text, f0, dur):
-    """Whisper-транскрипт -> озвучка (voice) или оверлей (subs)."""
     mode = get_mode()
     if mode not in ("voice", "subs") or not text:
         return
@@ -1433,11 +1391,11 @@ def route_speech(text, f0, dur):
     f0_str = f"{f0:.0f}Гц" if f0 else "—"
     print(f"[SPEECH] {dur:.1f}с | F0 {f0_str} -> голос {voice} ({reason}), "
           f"rate {rate:.2f}, говорю: {text[:50]!r}")
-    voice_profile.set_last_spoken(len(text))   # для калибровки темпа
+    voice_profile.set_last_spoken(len(text))
     speak_text_async(text, voice, rate, dur_src)
 
 # ======================================================
-# Whisper: потоковое распознавание + перевод по предложениям
+# Whisper
 # ======================================================
 def resample_to_16k(audio, sr):
     if sr == 16000:
@@ -1486,7 +1444,6 @@ def whisper_worker(seg_queue, model_name, whisper_lang):
             f0 = estimate_pitch_f0(audio16, 16000)
 
             def emit(sentence, seg_dur):
-                """Перевод и отдача одного предложения в режимы."""
                 if not sentence:
                     return
                 ru = translate_to_ru(sentence, lang)
@@ -1498,7 +1455,6 @@ def whisper_worker(seg_queue, model_name, whisper_lang):
                                 transcript=sentence[:120],
                                 note="нет переводчика")
 
-            # --- потоковый вывод по предложениям ---
             buf = ""
             full_text = ""
             for seg_item in segments:
@@ -1508,7 +1464,6 @@ def whisper_worker(seg_queue, model_name, whisper_lang):
                 full_text += " " + piece
                 buf = f"{buf} {piece}".strip()
 
-                # отдаём всё, что закончилось знаком конца предложения
                 while True:
                     m = SENTENCE_FLUSH_RE.match(buf)
                     if not m:
@@ -1519,11 +1474,9 @@ def whisper_worker(seg_queue, model_name, whisper_lang):
                     if len(sentence) >= 2:
                         emit(sentence, seg_dur)
 
-            # хвост без точки — конец VAD-сегмента, отдаём как есть
             if buf:
                 emit(buf, dur)
 
-            # --- метрики темпа по всей реплике ---
             text = full_text.strip()
             words = re.findall(r"[а-яёА-ЯЁa-zA-Z]+", text)
             cps = (len(text) / dur) if len(text) >= 12 else None
@@ -1574,7 +1527,7 @@ def _apply_mark_male(e=None):
     print(f"{tag} Метка МУЖИК: {msg}")
     if ok:
         dialogue.reset()
-        save_marks_now()          # метка сразу в конфиг, не пропадёт
+        save_marks_now()
     log_metrics(source="mark", gender="male",
                 f0=round(f0, 1) if f0 else None, ok=ok, note=msg)
 
@@ -1600,16 +1553,23 @@ def _apply_reset(e=None):
           f"(голос {VOICE_MALE})")
     log_metrics(source="manual", note="сброс диалога")
 
+# --- ИСПРАВЛЕНО: выбор области уходит через очередь в главный поток Tk ---
 def _apply_reselect(e=None):
     if _app is None:
         print("[!] Превью ещё не запущено — область перевыделить нельзя")
         return
-    new_box = select_region(parent=_app.root)
-    if new_box:
-        _app.reselect_box(new_box)
-        overlay.set_box(new_box)
+    def _do():
+        try:
+            new_box = select_region(parent=_app.root)
+            if new_box:
+                _app.reselect_box(new_box)
+                overlay.set_box(new_box)
+        except Exception:
+            print("[RESELECT ERROR] — полный стек ниже:")
+            traceback.print_exc()
+    post_to_tk(_do)
 
-# --- выключатель озвучки (Right Shift) ---
+# --- выключатель озвучки ---
 _muted = False
 _mute_lock = threading.Lock()
 
@@ -1628,7 +1588,6 @@ def _apply_mute_toggle(e=None):
     state = "ВЫКЛ" if new else "ВКЛ"
     print(f"[MUTE] Озвучка {state}")
     if new:
-        # глушим всё, что звучит, и чистим очередь
         while True:
             try:
                 _tts_queue.get_nowait()
@@ -1644,11 +1603,7 @@ def _apply_mute_toggle(e=None):
             overlay._flash_text(f"● Озвучка: {state}")
         except Exception:
             pass
-    if _app is not None and _app.root is not None:
-        try:
-            _app.root.after(0, _flash)
-        except Exception:
-            pass
+    post_to_tk(_flash)
     log_metrics(source="mute", muted=new)
 
 def keyboard_control():
@@ -1715,7 +1670,7 @@ def keyboard_control():
         print(f"[!] Горячие клавиши не завелись: {e}")
 
 # ======================================================
-# TTS: фразы играют ПОДРЯД (очередь), только свежайшая выталкивает старую
+# TTS
 # ======================================================
 SENT_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
 
@@ -1873,8 +1828,6 @@ def speak_text_async(text, voice, rate=None, rate_src="—"):
     if rate is None:
         rate = voice_profile.snapshot()
         rate_src = "темп Whisper"
-    # НЕ прерываем звучащую фразу: новая выталкивает только устаревшую
-    # из очереди. Прерывание (_bump_gen) — только при смене режима и мьюте.
     if _tts_queue.full():
         try:
             _tts_queue.get_nowait()
@@ -1884,7 +1837,7 @@ def speak_text_async(text, voice, rate=None, rate_src="—"):
     print(f"[QUEUE] фраза в очереди: {text[:50]!r}")
 
 # ======================================================
-# Окно-превью: опрос, озвучка (режимы) или оверлей
+# Окно-превью
 # ======================================================
 class PreviewApp:
     def __init__(self, root, box):
@@ -1902,6 +1855,7 @@ class PreviewApp:
         self._last_had_text = False
         self._sub_key = None
         self._sub_first_len = 0
+        self._cached_ocr = None   # последний успешный результат OCR
 
         root.title("alise.py — превью области распознавания")
         root.attributes("-topmost", True)
@@ -1958,6 +1912,7 @@ class PreviewApp:
         self._stable_since = 0.0
         self._prev_small = None
         self._sub_key = None
+        self._cached_ocr = None
         cfg = load_config()
         cfg["region"] = {"x": new_box[0], "y": new_box[1],
                          "w": new_box[2], "h": new_box[3]}
@@ -1967,9 +1922,11 @@ class PreviewApp:
               f"w={new_box[2]}, h={new_box[3]}")
 
     def reselect(self):
+        # кнопка в главном потоке — можно выбирать напрямую
         new_box = select_region(parent=self.root)
         if new_box:
             self.reselect_box(new_box)
+            overlay.set_box(new_box)
 
     def quit(self):
         self.root.destroy()
@@ -1979,6 +1936,17 @@ class PreviewApp:
         current_text = ""
         t0 = time.perf_counter()
         try:
+            # исполняем отложенные вызовы из других потоков (клавиши и т.п.)
+            while True:
+                try:
+                    fn = _pending_tk.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception:
+                    traceback.print_exc()
+
             frame = capture_region(self.box)
             cap_ms = (time.perf_counter() - t0) * 1000
 
@@ -1993,17 +1961,15 @@ class PreviewApp:
 
             mode = get_mode()
 
-            # OCR нужен только в режиме «Голос по сабам»
+            # ИСПРАВЛЕНО: кэш OCR при статичном кадре — FPS не падает
             if mode != "subs_voice" or bright < 0.003:
                 texts, boxes = [], []
-                self._static_runs = 0
-            elif (static and self._static_runs >= OCR_SKIP_STATIC
-                  and not self._last_had_text):
-                texts, boxes = [], []
-                self._static_runs += 1
+                self._cached_ocr = None
+            elif static and self._cached_ocr is not None:
+                texts, boxes = self._cached_ocr
             else:
-                self._static_runs = 0
                 texts, boxes = extract_text(frame)
+                self._cached_ocr = (texts, boxes) if texts else None
             self._last_had_text = bool(texts)
 
             ocr_ms = (time.perf_counter() - t0) * 1000 - cap_ms
@@ -2013,7 +1979,6 @@ class PreviewApp:
             current_text = " ".join(texts).strip()
             now = time.time()
 
-            # --- речь игры: оверлей в режиме subs, иначе гасим и чистим ---
             if mode == "subs":
                 while True:
                     try:
@@ -2027,7 +1992,6 @@ class PreviewApp:
                         overlay.show_text(txt, gender)
                         print(f"[SUB] оверлей ({gender}): {txt[:60]!r}")
             else:
-                # плашку режима/мьюта не гасим — poll раньше её убивал
                 if not overlay.is_flashing():
                     overlay.hide()
                 while not overlay_queue.empty():
@@ -2036,7 +2000,6 @@ class PreviewApp:
                     except queue.Empty:
                         break
 
-            # --- линия субтитра на экране (режим «Голос по сабам») ---
             if current_text:
                 key_now = norm_key(current_text)
                 if self._sub_key and key_now.startswith(self._sub_key):
@@ -2065,8 +2028,6 @@ class PreviewApp:
                         and now - self.last_speak_time >= COOLDOWN_SEC
                         and mode == "subs_voice"):
 
-                    # OCR-фраза готова; живой F0 всё это время слушался
-                    # параллельно — голос берём под текущего диктора
                     f0_live = voice_profile.live_f0_fresh()
                     voice, gender, reason = dialogue.on_phrase(current_text,
                                                                f0_live)
@@ -2156,6 +2117,7 @@ class PreviewApp:
 def main():
     global ocr_model, tts_model, OUTPUT_DEVICE_INDEX, INPUT_DEVICE_INDEX
     global _app, recorder
+    global WHISPER_MODEL, WHISPER_LANG
 
     cfg = load_config()
     print(f"Метрики модуляции пишутся в: {os.path.abspath(METRICS_FILE)}")
@@ -2168,7 +2130,6 @@ def main():
     if CURRENT_MODE not in VALID_MODES:
         CURRENT_MODE = "voice"
 
-    global WHISPER_MODEL, WHISPER_LANG
     WHISPER_MODEL = cfg.get("whisper_model", WHISPER_MODEL)
     wl = cfg.get("whisper_lang", "auto")
     WHISPER_LANG = None if wl in (None, "", "auto") else wl
@@ -2184,7 +2145,6 @@ def main():
 
     compute_dpi_scale()
 
-    # --- звуковые устройства ---
     devices = list_devices_subprocess()
     if devices:
         in_idx, in_name = choose_device(devices, "in", cfg)
@@ -2199,11 +2159,9 @@ def main():
               "по умолчанию")
         OUTPUT_DEVICE_INDEX = None
 
-    # --- OCR ---
     print("Инициализация RapidOCR...")
     ocr_model = init_ocr()
 
-    # --- TTS ---
     print(f"Загрузка Silero TTS (device={DEVICE})...")
     tts_model, _ = torch.hub.load("snakers4/silero-models", "silero_tts",
                                   language="ru", speaker="v4_ru",
@@ -2211,10 +2169,8 @@ def main():
     tts_model.to(DEVICE)
     print("[OK] Silero v4 готов.")
 
-    # --- поток-спикер: единственный, кто играет звук ---
     threading.Thread(target=tts_speaker, daemon=True).start()
 
-    # --- слушатель речи (живой F0) + Whisper (распознавание и перевод) ---
     if INPUT_DEVICE_INDEX is not None:
         seg_queue = queue.Queue(maxsize=3)
         recorder = SpeechRecorder(INPUT_DEVICE_INDEX, seg_queue)
@@ -2226,10 +2182,8 @@ def main():
         print("[!] Входное устройство недоступно — живой F0 отключён, "
               "голос всегда будет базовым")
 
-    # --- горячие клавиши ---
     threading.Thread(target=keyboard_control, daemon=True).start()
 
-    # --- выбор области: ОБЯЗАТЕЛЬНО спрашиваем, даже если есть в конфиге ---
     saved = cfg.get("region")
     box = None
     if saved:
