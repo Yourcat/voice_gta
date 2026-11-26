@@ -3,8 +3,9 @@
 install_deps.py — авто-установка окружения для alise.py.
 
 Пакеты ставятся из requirements.txt, лежащего рядом с этим скриптом.
-Отдельно ставится PyTorch (CUDA при наличии NVIDIA), удаляется
-конфликтный paddle, скачивается пакет Argos en->ru и модель Whisper.
+Отдельно ставится PyTorch (CUDA при наличии NVIDIA, иначе CPU),
+удаляется конфликтный paddle, скачивается пакет Argos en->ru
+и модель Whisper.
 
 Запуск:  py install_deps.py
 Скрипт идемпотентный: повторный запуск не ломает уже установленное.
@@ -15,10 +16,12 @@ import subprocess
 import sys
 import os
 import importlib
+import importlib.metadata
 
 REQUIREMENTS_FILE = "requirements.txt"
 
-# torch не включаем в requirements.txt: у него особый индекс для CUDA
+# torch не включаем в requirements.txt: для NVIDIA — особый индекс,
+# для остальных — обычный CPU/wheel с PyPI
 TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu121"
 
 CONFLICTING_PACKAGES = ["paddleocr", "paddle", "paddlepaddle"]
@@ -63,6 +66,17 @@ def ensure_pip():
         pip_install(["--upgrade", "pip", "setuptools", "wheel"])
 
 
+def _pkg_installed(name):
+    """Пакет числится установленным (по метаданным pip)."""
+    try:
+        importlib.metadata.distribution(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
 def read_requirements():
     """Читает requirements.txt: строки без комментариев и пустые."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -88,7 +102,12 @@ def read_requirements():
 
 
 def missing_from_requirements(pkgs):
-    """Какие пакеты из requirements ещё не импортируются."""
+    """Какие пакеты из requirements ещё не доступны.
+
+    Пакет считается установленным, если он есть в метаданных pip.
+    Если метаданные есть, но импорт падает — печатаем настоящую ошибку
+    (DLL, конфликт версий) и НЕ ставим пакет повторно: pip это не чинит.
+    """
     missing = []
     for pkg in pkgs:
         base = (pkg.split(";")[0].strip()
@@ -96,7 +115,14 @@ def missing_from_requirements(pkgs):
         mod = IMPORT_ALIASES.get(base, base.replace("-", "_"))
         try:
             importlib.import_module(mod)
-        except Exception:
+            continue
+        except Exception as e:
+            if _pkg_installed(base):
+                print(f"[!] {base} установлен, но импорт падает: "
+                      f"{type(e).__name__}: {e}")
+                print("    Повторная установка через pip не поможет —")
+                print("    обычно это DLL или конфликт версий.")
+                continue
             missing.append(pkg)
     return missing
 
@@ -157,7 +183,8 @@ def install_torch():
         except ImportError:
             pass
 
-    print("[*] Ставлю PyTorch (CPU/CUDA по умолчанию)")
+    # AMD/CPU: CUDA не используется, ставим обычный wheel с PyPI
+    print("[*] Ставлю PyTorch (CPU — для AMD/NVIDIA без CUDA)")
     pip_install(["torch"], check=False)
     try:
         import torch  # noqa: F401
@@ -169,14 +196,16 @@ def install_torch():
 def install_argos_pair():
     print("[*] Установка пакета перевода Argos en->ru")
     try:
-        from argostranslate import package
-        installed = {p.code for p in package.get_installed_languages()}
-        if "en" in installed and "ru" in installed:
-            src = next(p for p in package.get_installed_languages()
-                       if p.code == "en")
-            if any(t.code == "ru" for t in src.translations_to()):
-                print("[OK] Argos en->ru уже установлен")
-                return
+        # ИСПРАВЛЕНО: get_installed_languages живёт в argostranslate.translate,
+        # а не в argostranslate.package — из-за этого установка падала
+        from argostranslate import package, translate
+        installed = translate.get_installed_languages()
+        src = next((l for l in installed if l.code == "en"), None)
+        already = (src is not None
+                   and any(t.code == "ru" for t in src.translations_to()))
+        if already:
+            print("[OK] Argos en->ru уже установлен")
+            return
         print("[*] Скачиваю пакет Argos en_ru (~250 МБ)")
         package.update_package_index()
         available = package.get_available_packages()
