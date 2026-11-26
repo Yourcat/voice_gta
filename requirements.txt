@@ -8,3 +8,4 @@ pillow
 faster-whisper
 argostranslate
 keyboard
+huggingface_hub
